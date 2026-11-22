@@ -1,8 +1,9 @@
+diff --git a/lib/index.js b/lib/index.js
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -241,7 +241,7 @@
- 		throw error;
- 	}
+@@ -282,7 +282,7 @@ async function pickNativeDirectory(signal, internals = {}) {
+ 		DIALOG_TITLE
+ 	], signal, "hidden")).stdout);
  	if (platform === "win32") return await (internals.pickWin32Dialog ?? pickWin32Directory)(signal);
 -	if (platform === "linux") {
 +	if (platform === "linux" || platform === "android") {

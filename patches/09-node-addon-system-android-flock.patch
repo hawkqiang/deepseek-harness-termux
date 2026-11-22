@@ -1,0 +1,29 @@
+--- a/lib/flock.js
++++ b/lib/flock.js
+@@ -7,7 +7,7 @@
+     if (binding)
+         return binding;
+     const { platform, arch } = process;
+-    if (platform !== 'linux' && platform !== 'darwin') {
++    if (platform !== 'linux' && platform !== 'darwin' && platform !== 'android') {
+         throw Object.assign(new Error(`flock is not supported on ${platform}-${arch}`), {
+             code: 'ERR_FLOCK_UNSUPPORTED_PLATFORM',
+             syscall: 'flock',
+@@ -20,6 +20,17 @@
+         filename = join(report.header.glibcVersionRuntime ? 'glibc' : 'musl', filename);
+     }
+     const require = createRequire(import.meta.url);
++    // Android/Termux: no @deepseek-ai/node-addon-system-android-<arch> optional
++    // package exists (upstream ships darwin/linux glibc|musl prebuilts only).
++    // bionic has flock(2); the binding is built by install.sh / shipped by the
++    // Termux prebuilt into bin/android-<arch>/ of this package, and the
++    // glibc/musl split does not apply to Android.
++    if (platform === 'android') {
++        const manifest = require.resolve('@deepseek-ai/node-addon-system/package.json');
++        binding = require(join(dirname(manifest), 'bin', 'android-' + arch, filename));
++        return binding;
++    }
++
+     const manifest = require.resolve(`@deepseek-ai/node-addon-system-${platform}-${arch}/package.json`);
+     binding = require(join(dirname(manifest), 'bin', filename));
+     return binding;

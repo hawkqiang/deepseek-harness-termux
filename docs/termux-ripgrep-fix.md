@@ -73,24 +73,21 @@ rgPathPromise ??= Promise.resolve().then(() => {
 });
 ```
 
-## 仓库集成
+## 仓库集成（0.2.2-rc.5）
 
-- `install.sh` 在打完所有补丁后自动创建 shim（幂等），并应用 `08-*.patch`；
-- 安装完成时的 patched 校验循环会把 `08-dsh-tool-fs-search-android-rg` 映射到 `dsh-tool-fs-search` 校验。
+- rc5 中 `dsh-tool-fs-search` 的 `resolveRgPath` 已上游化为
+  `@deepseek-ai/dsh-util-ripgrep`；本仓库补丁相应改名
+  `patches/08-dsh-util-ripgrep-android-rg.patch`（目标 `dsh-util-ripgrep/lib/index.js`）：
+  先 `require.resolve('@vscode/ripgrep-<platform>-<arch>/bin/rg')`（纯文件系统解析，无模块
+  求值），再退回 `import('@vscode/ripgrep')`（保留 Electron asar 处理），最后退回系统 rg。
+- `install.sh` 在打完补丁后自动创建 shim（幂等，包名按运行 Node 的
+  `process.arch` 动态命名：`@vscode/ripgrep-android-arm64` / `-x64` / …），
+  并把 `08-*` 映射到 `dsh-util-ripgrep` 做校验。
 
 ## 重新应用 / 恢复（`npm update -g @deepseek-ai/dsh` 之后）
 
-升级会覆盖补丁与 shim，glob/grep 会再次报错。恢复命令：
-
-```bash
-bash ~/deepseek-harness-termux/scripts/fix-dsh-glob-rg.sh
-```
-
-脚本幂等（已修补则直接提示跳过），执行完会提示对运行中的实例热重载：
-
-```
-dev_reload_package "dsh-tool-fs-search"
-```
+升级会覆盖补丁与 shim。恢复方式：重跑 `bash install.sh`（幂等：版本一致时跳过 npm
+安装，只重打补丁、重建 shim、补齐缺失的 native）。
 
 ## 验证
 
@@ -98,12 +95,16 @@ dev_reload_package "dsh-tool-fs-search"
 # 1. 系统 rg 存在
 ls -l /data/data/com.termux/files/usr/bin/rg
 
-# 2. 平台包解析直接命中（无需 import）
-node -e 'console.log(require.resolve("@vscode/ripgrep-android-arm64/bin/rg"))'
+# 2. 平台包解析直接命中（无需 import；arch 按设备替换）
+node -e 'console.log(require.resolve("@vscode/ripgrep-android-x64/bin/rg"))'
 
-# 3. 插件已修补（包含 require.resolve 标记）
-grep -n 'createRequire(import.meta.url)' \
-  ~/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js
+# 3. util-ripgrep 实际解析结果
+node --expose-internals --input-type=module -e '
+import { resolveRgPath } from "/data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-util-ripgrep/lib/index.js";
+console.log("rgPath:", await resolveRgPath());'
 
-# 4. 热重载后实际调用 glob / grep 工具，不再报 "ripgrep launch failed"
+# 4. 在会话中实际调用 glob / grep 工具，不再报 "ripgrep launch failed"
 ```
+
+> 0.1.x 时代的手工修复脚本 `scripts/fix-dsh-glob-rg.sh` 已随 rc5 改造移除；
+> 上述能力全部由 `install.sh` 与补丁自动完成。

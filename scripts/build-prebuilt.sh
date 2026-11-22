@@ -38,15 +38,29 @@ if [ ! -f "$DSH_DIR/package.json" ]; then
 fi
 echo "==> Using patched install at: $DSH_DIR"
 
+# Native module paths follow the RUNNING Node arch (koffi loader triplet
+# android_<arch>, node-pty prebuilds dir android-<arch>) — no hardcoded ABI.
+KARCH="$(node -p process.arch)"
 PTY="$DSH_DIR/node_modules/node-pty/build/Release/pty.node"
-KOFFI="$DSH_DIR/node_modules/koffi/build/koffi/android_arm64/koffi.node"
-if [ ! -f "$PTY" ]; then
-    echo "[ERROR] missing $PTY — run install.sh first"
-    exit 1
+KOFFI="$DSH_DIR/node_modules/koffi/build/koffi/android_$KARCH/koffi.node"
+# rc5's launcher needs this binding; it is built by install.sh (5c) from the
+# upstream source (upstream publishes no android prebuilt package).
+NARB="$DSH_DIR/node_modules/node-addon-require-builtin/build/napi/napi-v9-android-$KARCH/require_builtin.node"
+# flock binding for @deepseek-ai/node-addon-system (session persistence locks;
+# no android prebuilt upstream — built by install.sh 5e, consumed via
+# patches/09-node-addon-system-android-flock.patch)
+NAS_FLOCK="$DSH_DIR/node_modules/@deepseek-ai/node-addon-system/bin/android-$KARCH/system.node"
+for f in "$PTY" "$KOFFI"; do
+    if [ ! -f "$f" ]; then
+        echo "[ERROR] missing $f — run install.sh first"
+        exit 1
+    fi
+done
+if [ ! -f "$NARB" ]; then
+    echo "[WARN] missing $NARB — the rc5 launcher will fail at boot without it"
 fi
-if [ ! -f "$KOFFI" ]; then
-    echo "[ERROR] missing $KOFFI — run install.sh first"
-    exit 1
+if [ ! -f "$NAS_FLOCK" ]; then
+    echo "[WARN] missing $NAS_FLOCK — session opens (headless/web) will fail with 'flock is not supported'"
 fi
 echo "    pty.node : $PTY"
 echo "    koffi    : $KOFFI"
@@ -64,7 +78,7 @@ build_layered() {
     STAGE="$(mktemp -d)"
     mkdir -p "$STAGE/package/bin" \
              "$STAGE/package/patches" \
-             "$STAGE/package/prebuilt/android-arm64"
+             "$STAGE/package/prebuilt/android-$KARCH"
 
     cp "$PKG_DIR/package.json" "$STAGE/package/"
     cp "$PKG_DIR/install.js"    "$STAGE/package/"
@@ -73,8 +87,16 @@ build_layered() {
     cp "$PKG_DIR/bin/dsh"       "$STAGE/package/bin/dsh"
     chmod +x "$STAGE/package/bin/dsh"
     cp "$REPO_DIR"/patches/*.patch "$STAGE/package/patches/"
-    cp "$PTY"  "$STAGE/package/prebuilt/android-arm64/pty.node"
-    cp "$KOFFI" "$STAGE/package/prebuilt/android-arm64/koffi.node"
+    cp "$PTY"  "$STAGE/package/prebuilt/android-$KARCH/pty.node"
+    cp "$KOFFI" "$STAGE/package/prebuilt/android-$KARCH/koffi.node"
+    if [ -f "$NARB" ]; then
+        cp "$NARB" "$STAGE/package/prebuilt/android-$KARCH/require_builtin.node"
+        echo "    -> require_builtin.node staged (android-$KARCH)"
+    fi
+    if [ -f "$NAS_FLOCK" ]; then
+        cp "$NAS_FLOCK" "$STAGE/package/prebuilt/android-$KARCH/system.node"
+        echo "    -> node-addon-system system.node staged (android-$KARCH)"
+    fi
 
     OUT="$REPO_DIR/dsh-termux.tgz"
     tar -czf "$OUT" -C "$STAGE" package
@@ -97,11 +119,11 @@ build_full() {
     # node-gyp rebuild and tries to COMPILE. Mirror the binary there so a
     # plain `npm i -g` (no --ignore-scripts) never compiles.
     if [ -f "$DSH_DIR/node_modules/node-pty/build/Release/pty.node" ]; then
-        mkdir -p "$FULL_PKG/node_modules/node-pty/prebuilds/android-arm64"
+        mkdir -p "$FULL_PKG/node_modules/node-pty/prebuilds/android-$KARCH"
         cp "$DSH_DIR/node_modules/node-pty/build/Release/pty.node" \
-           "$FULL_PKG/node_modules/node-pty/prebuilds/android-arm64/pty.node"
-        chmod 755 "$FULL_PKG/node_modules/node-pty/prebuilds/android-arm64/pty.node"
-        echo "    -> node-pty prebuild mirrored (prebuilds/android-arm64/pty.node)"
+           "$FULL_PKG/node_modules/node-pty/prebuilds/android-$KARCH/pty.node"
+        chmod 755 "$FULL_PKG/node_modules/node-pty/prebuilds/android-$KARCH/pty.node"
+        echo "    -> node-pty prebuild mirrored (prebuilds/android-$KARCH/pty.node)"
     fi
 
     # sharp's wasm fallback must live INSIDE the vendored tree (the layered

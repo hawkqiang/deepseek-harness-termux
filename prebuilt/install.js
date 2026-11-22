@@ -6,7 +6,9 @@
 //   2. apply the Android source patches (bundled in patches/)
 //   3. drop in the prebuilt native modules (bundled in prebuilt/)
 //      - node-pty  -> node-pty/build/Release/pty.node
-//      - koffi     -> koffi/build/koffi/android_arm64/koffi.node
+//      - koffi     -> koffi/build/koffi/android_<arch>/koffi.node
+//      - require-builtin -> node-addon-require-builtin/build/napi/napi-v9-android-<arch>/require_builtin.node
+//      - node-addon-system flock -> @deepseek-ai/node-addon-system/bin/android-<arch>/system.node
 //
 // Everything is idempotent: re-running `npm i -g <tarball>` re-applies the
 // patches and re-drops the natives (npm re-extracts dsh first, which wipes
@@ -20,7 +22,7 @@ const path = require("node:path");
 
 // Bump together with patches/: only a dsh version whose sources the patches
 // apply to cleanly is safe to pin here. Overridable via DSH_VERSION.
-const DSH_VERSION = process.env.DSH_VERSION || "0.1.0-rc.6";
+const DSH_VERSION = process.env.DSH_VERSION || "0.2.2-rc.5";
 const PKG_DIR = __dirname;
 
 function sh(cmd, opts) {
@@ -33,17 +35,18 @@ function sh(cmd, opts) {
 
 // ── Pre-flight checks ───────────────────────────────────────────────────────
 // Fail fast with a clear message instead of a confusing mid-install error.
-const [nodeMajor] = process.versions.node.split(".").map(Number);
-if (Number(nodeMajor) < 22) {
-  console.error(`[ERROR] dsh needs Node.js >= 22.19 (found ${process.version}).`);
-  console.error("        On Termux:  pkg install nodejs-lts   (then reopen the shell)");
+// dsh 0.2.x declares engines.node >= 24.9.0.
+const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+if (nodeMajor < 24 || (nodeMajor === 24 && nodeMinor < 9)) {
+  console.error(`[ERROR] dsh 0.2.x needs Node.js >= 24.9.0 (found ${process.version}).`);
+  console.error("        On Termux:  pkg update -y && pkg upgrade -y && pkg install -y nodejs");
   process.exit(1);
 }
-if (process.arch !== "arm64") {
-  console.error(`[ERROR] this package ships android-arm64 binaries only (found ${process.arch}).`);
-  console.error("        On an arm64 Termux device use the full install:  bash install.sh");
-  process.exit(1);
-}
+// koffi's loader triplet (android_${process.arch}) and node-pty's prebuild
+// dir (android-${process.arch}) follow the RUNNING Node arch; no device ABI
+// is hardcoded. The artifact must actually contain natives for this arch —
+// checked below, after resolving KARCH.
+const KARCH = process.arch;
 if (process.platform !== "android") {
   console.warn("  [WARN] this package targets Termux/Android; continuing anyway");
 }
@@ -95,12 +98,11 @@ const PATCH_TARGETS = [
   ["01-terminal-bash-android-shell.patch", "dsh-terminal-bash"],
   ["02-session-persistence-link-rename.patch", "dsh-session-persistence-jsonl"],
   ["03-subprocess-local-android.patch", "dsh-subprocess-local"],
-  ["04-host-apiproxy-termux-open-index.patch", "dsh-host-apiproxy"],
-  ["04-host-apiproxy-termux-open-opener.patch", "dsh-host-apiproxy"],
   ["05-host-directory-picker-native-android.patch", "dsh-host-directory-picker-native"],
   ["06-workspace-archive-skip-session-known-check.patch", "dsh-workspace"],
   ["07-sandbox-local-proot-runner.patch", "dsh-sandbox-local"],
-  ["koffi-statx.patch", null], // koffi lives outside the @deepseek-ai scope
+  ["08-dsh-util-ripgrep-android-rg.patch", "dsh-util-ripgrep"],
+  ["09-node-addon-system-android-flock.patch", "node-addon-system"],
 ];
 for (const [file, pkg] of PATCH_TARGETS) {
   const patch = path.join(PKG_DIR, "patches", file);
@@ -121,17 +123,45 @@ for (const [file, pkg] of PATCH_TARGETS) {
   }
 }
 
+// ── Step 2b: ripgrep platform-package shim ──────────────────────────────────
+// @vscode/ripgrep requires @vscode/ripgrep-<platform>-<arch> AT MODULE LOAD,
+// and no android platform package exists. With the patched resolveRgPath
+// (08-*.patch) a system rg alone would suffice, but the shim keeps every
+// @vscode/ripgrep consumer working. Idempotent; arch follows the RUNNING Node.
+const rgSystem = process.env.RG_SYSTEM || "/data/data/com.termux/files/usr/bin/rg";
+if (fs.existsSync(rgSystem)) {
+  const rgShim = path.join(dshDir, "node_modules", "@vscode", `ripgrep-android-${process.arch}`);
+  if (!fs.existsSync(path.join(rgShim, "package.json"))) {
+    fs.mkdirSync(path.join(rgShim, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(rgShim, "package.json"), JSON.stringify({
+      name: `@vscode/ripgrep-android-${process.arch}`,
+      version: "1.18.0",
+      description: `Termux shim: resolves rgPath to the system ripgrep (${rgSystem}); @vscode/ripgrep has no android platform package.`,
+      license: "MIT",
+      bin: { rg: "bin/rg" },
+    }, null, 2) + "\n");
+    fs.symlinkSync(rgSystem, path.join(rgShim, "bin", "rg"));
+    console.log(`  [OK] ripgrep android-${process.arch} shim -> ${rgSystem}`);
+  } else {
+    console.log("  [SKIP] ripgrep shim already present");
+  }
+} else {
+  console.log("  [WARN] system rg not found — glob/grep tools need it (pkg install ripgrep)");
+}
+
 // ── Step 3: drop in the prebuilt native modules ─────────────────────────────
-console.log("==> [3/3] Installing prebuilt native modules (android-arm64)");
-const prebuiltDir = path.join(PKG_DIR, "prebuilt", "android-arm64");
+console.log(`==> [3/3] Installing prebuilt native modules (android-${KARCH})`);
+const prebuiltDir = path.join(PKG_DIR, "prebuilt", `android-${KARCH}`);
 const TARGETS = [
   ["pty.node", path.join(dshDir, "node_modules", "node-pty", "build", "Release", "pty.node")],
-  ["koffi.node", path.join(dshDir, "node_modules", "koffi", "build", "koffi", "android_arm64", "koffi.node")],
+  ["koffi.node", path.join(dshDir, "node_modules", "koffi", "build", "koffi", `android_${process.arch}`, "koffi.node")],
+  ["require_builtin.node", path.join(dshDir, "node_modules", "node-addon-require-builtin", "build", "napi", `napi-v9-android-${process.arch}`, "require_builtin.node")],
+  ["system.node", path.join(dshDir, "node_modules", "@deepseek-ai", "node-addon-system", "bin", `android-${process.arch}`, "system.node")],
 ];
 for (const [file, dest] of TARGETS) {
   const src = path.join(prebuiltDir, file);
   if (!fs.existsSync(src)) {
-    console.log("  [WARN] prebuilt module missing:", file, "(this package only ships android-arm64)");
+    console.log("  [WARN] prebuilt module missing:", file, `(no prebuilt/android-${KARCH} in this artifact)`);
     continue;
   }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -150,7 +180,7 @@ if (verify.includes("ok")) {
 } else {
   console.error("  [ERROR] the prebuilt native modules failed to load on this Node.");
   console.error("          Node version:", process.version, "| platform:", process.platform, process.arch);
-  console.error("          This package ships android-arm64 N-API binaries (Node >= 22.19).");
+  console.error(`          This artifact ships android-${KARCH} N-API binaries (Node >= 24.9.0).`);
   process.exit(1);
 }
 

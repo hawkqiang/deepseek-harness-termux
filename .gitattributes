@@ -1,0 +1,12 @@
+# Termux/Android targets require LF: bash rejects CRLF scripts and
+# `patch -p1` fails on CRLF patch files (learned during rc5 verification).
+* text=auto eol=lf
+*.sh text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.patch text eol=lf
+*.tgz binary
+*.node binary
+*.png binary
+*.ico binary

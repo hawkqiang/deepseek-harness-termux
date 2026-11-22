@@ -184,13 +184,18 @@ Two ways to enable web search in the web UI:
 | [`01-terminal-bash-android-shell.patch`](patches/01-terminal-bash-android-shell.patch) | `dsh-terminal-bash` | Resolves a real shell binary on Termux (no `/bin/bash` on Android) |
 | [`02-session-persistence-link-rename.patch`](patches/02-session-persistence-link-rename.patch) | `dsh-session-persistence-jsonl` | Falls back to atomic `rename(2)` when Android sepolicy blocks `link(2)` with `EACCES/EPERM` |
 | [`03-subprocess-local-android.patch`](patches/03-subprocess-local-android.patch) | `dsh-subprocess-local` | Treats `android` like `linux` for process-group inspection (`kill(-pid, 0)`) |
-| [`04-host-apiproxy-termux-open-index.patch`](patches/04-host-apiproxy-termux-open-index.patch) | `dsh-host-apiproxy` | Opens paths/URLs via `termux-open` on Android; enables native-path detection |
-| [`04-host-apiproxy-termux-open-opener.patch`](patches/04-host-apiproxy-termux-open-opener.patch) | `dsh-host-apiproxy` | Same fixes in `lib/types/native-path-opener.js` |
 | [`05-host-directory-picker-native-android.patch`](patches/05-host-directory-picker-native-android.patch) | `dsh-host-directory-picker-native` | Routes directory picking through the Linux (zenity) path on Android |
 | [`06-workspace-archive-skip-session-known-check.patch`](patches/06-workspace-archive-skip-session-known-check.patch) | `dsh-workspace` | Skips the session-known integrity check when archiving (fails on fresh installs) |
 | [`07-sandbox-local-proot-runner.patch`](patches/07-sandbox-local-proot-runner.patch) | `dsh-sandbox-local` | Uses `proot` as the sandbox runner on Termux (no bubblewrap namespace support) |
-| [`08-dsh-tool-fs-search-android-rg.patch`](patches/08-dsh-tool-fs-search-android-rg.patch) | `dsh-tool-fs-search` | Resolves ripgrep via `require.resolve()` + system-rg fallback; `@vscode/ripgrep` ships no `android-arm64` platform package (see [`docs/termux-ripgrep-fix.md`](docs/termux-ripgrep-fix.md)) |
-| [`koffi-statx.patch`](patches/koffi-statx.patch) | `koffi` | Conditionally compiles out the `statx()` syscall on Android |
+| [`08-dsh-util-ripgrep-android-rg.patch`](patches/08-dsh-util-ripgrep-android-rg.patch) | `dsh-util-ripgrep` | Resolves ripgrep via `require.resolve()` + system-rg fallback; `@vscode/ripgrep` ships no android platform package (any arch — see [`docs/termux-ripgrep-fix.md`](docs/termux-ripgrep-fix.md)) |
+| [`koffi-statx.patch`](patches/koffi-statx.patch) | `koffi` | Conditionally compiles out the glibc `statx()` path on Android (absent from Termux bionic at the default API level) |
+
+> The former `04-host-apiproxy-*` patches were removed for 0.2.2-rc.5: `dsh-host-apiproxy`
+> no longer exists in the rc5 dependency tree, and its open-path role moved to `dsh-web-app` +
+> npm `open` (which uses `xdg-open` on android — `install.sh` shims it to `termux-open`).
+> rc5's launcher additionally requires the `node-addon-require-builtin` native binding, which
+> `install.sh` builds from the upstream source for the running Node arch (upstream ships no
+> android prebuilt). See [`docs/rc5-baseline.md`](docs/rc5-baseline.md) for details.
 
 ## Compatibility Notes
 
@@ -207,19 +212,18 @@ deepseek-harness-termux/
 ├── LICENSE                    # MIT License
 ├── install.sh                 # Automated installer (idempotent)
 ├── docs/
-│   └── termux-ripgrep-fix.md  # Ripgrep android-arm64 fix (root cause + recovery)
+│   ├── rc5-baseline.md        # 0.2.2-rc.5 baseline, adaptation notes & verification results
+│   └── termux-ripgrep-fix.md  # Ripgrep on Termux (root cause + recovery)
 ├── scripts/
-│   └── fix-dsh-glob-rg.sh     # Re-apply the ripgrep fix after `npm update -g`
+│   └── build-prebuilt.sh      # Assemble the layered/vendored release tarballs on-device
 └── patches/                   # Source patches (patch -p1 inside each package)
     ├── 01-terminal-bash-android-shell.patch
     ├── 02-session-persistence-link-rename.patch
     ├── 03-subprocess-local-android.patch
-    ├── 04-host-apiproxy-termux-open-index.patch
-    ├── 04-host-apiproxy-termux-open-opener.patch
     ├── 05-host-directory-picker-native-android.patch
     ├── 06-workspace-archive-skip-session-known-check.patch
     ├── 07-sandbox-local-proot-runner.patch
-    ├── 08-dsh-tool-fs-search-android-rg.patch
+    ├── 08-dsh-util-ripgrep-android-rg.patch
     └── koffi-statx.patch
 ```
 

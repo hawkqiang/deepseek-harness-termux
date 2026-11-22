@@ -168,10 +168,17 @@ Web UI 里有两种开启网页搜索的方式:
 | [`01-terminal-bash-android-shell.patch`](patches/01-terminal-bash-android-shell.patch) | `dsh-terminal-bash` | 在 Termux 上解析真实存在的 shell(Android 没有 `/bin/bash`) |
 | [`02-session-persistence-link-rename.patch`](patches/02-session-persistence-link-rename.patch) | `dsh-session-persistence-jsonl` | Android sepolicy 拒绝 `link(2)`(`EACCES/EPERM`)时回退为原子 `rename(2)` |
 | [`03-subprocess-local-android.patch`](patches/03-subprocess-local-android.patch) | `dsh-subprocess-local` | 进程组检查(`kill(-pid, 0)`)将 `android` 视同 `linux` |
-| [`04-host-apiproxy-termux-open-index.patch`](patches/04-host-apiproxy-termux-open-index.patch) | `dsh-host-apiproxy` | Android 下用 `termux-open` 打开路径/URL;启用原生路径检测 |
-| [`04-host-apiproxy-termux-open-opener.patch`](patches/04-host-apiproxy-termux-open-opener.patch) | `dsh-host-apiproxy` | `lib/types/native-path-opener.js` 中的同类修复 |
 | [`05-host-directory-picker-native-android.patch`](patches/05-host-directory-picker-native-android.patch) | `dsh-host-directory-picker-native` | Android 下目录选择走 Linux(zenity)路径 |
-| [`koffi-statx.patch`](patches/koffi-statx.patch) | `koffi` | 在 Android 上有条件地编译掉 `statx()` 系统调用 |
+| [`06-workspace-archive-skip-session-known-check.patch`](patches/06-workspace-archive-skip-session-known-check.patch) | `dsh-workspace` | 归档会话时跳过 session-known 完整性检查(全新安装会失败) |
+| [`07-sandbox-local-proot-runner.patch`](patches/07-sandbox-local-proot-runner.patch) | `dsh-sandbox-local` | Termux 上用 `proot` 作为沙箱 runner(不支持 bubblewrap 命名空间) |
+| [`08-dsh-util-ripgrep-android-rg.patch`](patches/08-dsh-util-ripgrep-android-rg.patch) | `dsh-util-ripgrep` | ripgrep 经 `require.resolve()` 解析 + 系统 rg 回退;`@vscode/ripgrep` 无 android 平台包(任意架构,详见 [`docs/termux-ripgrep-fix.md`](docs/termux-ripgrep-fix.md)) |
+| [`koffi-statx.patch`](patches/koffi-statx.patch) | `koffi` | 在 Android 上有条件地编译掉 glibc `statx()` 路径(Termux bionic 默认 API 级别缺失) |
+
+> 原 `04-host-apiproxy-*` 两个补丁随 0.2.2-rc.5 移除:`dsh-host-apiproxy` 在 rc5 依赖树中
+> 不复存在,其打开路径/URL 的职责由 `dsh-web-app` + npm `open` 承担(android 走
+> `xdg-open`,install.sh 会建立到 `termux-open` 的 shim)。rc5 的 launcher 还要求
+> `node-addon-require-builtin` 原生绑定,install.sh 会按运行 Node 架构从上游源码构建
+> (上游未发布 android 预编译)。详见 [`docs/rc5-baseline.md`](docs/rc5-baseline.md)。
 
 ## 兼容性说明
 
@@ -183,17 +190,19 @@ Web UI 里有两种开启网页搜索的方式:
 
 ```
 deepseek-harness-termux/
-├── README.md                  # 本文件(英文)
-├── README.zh-CN.md            # 简体中文 README
+├── README.md                  # 英文 README
+├── README.zh-CN.md            # 本文件(简体中文)
 ├── LICENSE                    # MIT 许可证
 ├── install.sh                 # 自动化安装脚本(幂等)
+├── docs/rc5-baseline.md       # 0.2.2-rc.5 基线、适配记录与验证结果
 └── patches/                   # 源码补丁(在各包目录内 patch -p1 应用)
     ├── 01-terminal-bash-android-shell.patch
     ├── 02-session-persistence-link-rename.patch
     ├── 03-subprocess-local-android.patch
-    ├── 04-host-apiproxy-termux-open-index.patch
-    ├── 04-host-apiproxy-termux-open-opener.patch
     ├── 05-host-directory-picker-native-android.patch
+    ├── 06-workspace-archive-skip-session-known-check.patch
+    ├── 07-sandbox-local-proot-runner.patch
+    ├── 08-dsh-util-ripgrep-android-rg.patch
     └── koffi-statx.patch
 ```
 

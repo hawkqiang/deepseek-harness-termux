@@ -60,6 +60,16 @@ apply_patch() {
 # ── Step 0: Install system dependencies ─────────────────────────────────────
 echo "==> [0/9] Checking & installing system dependencies..."
 
+# Non-interactive apt: on upgrade-from-old bootstraps dpkg stops at conffile
+# prompts (e.g. openssl.cnf) and every install fails with "end of file on
+# stdin at conffile prompt". Keep the user's existing config (confold) and
+# never block the install on a question.
+export DEBIAN_FRONTEND=noninteractive
+mkdir -p "${PREFIX:-/data/data/com.termux/files/usr}/etc/apt/apt.conf.d"
+cat > "${PREFIX:-/data/data/com.termux/files/usr}/etc/apt/apt.conf.d/99dsh-noninteractive" <<'EOF'
+Dpkg::Options { "--force-confdef"; "--force-confold"; }
+EOF
+
 # Refresh package lists first. Stale lists are a common cause of "package not
 # found" / broken dependency resolution on older setups; if the refresh fails
 # we still continue with whatever lists exist (offline-friendly).
@@ -212,6 +222,20 @@ if [ -z "$NODE_VER" ]; then
     echo "  [ERROR] node not found after package install — aborting"
     exit 1
 fi
+# dsh 0.2.x declares engines.node >= 24.9.0; older Termux bootstraps ship a
+# node too old for the launcher (or a broken mixed libc++ state after partial
+# upgrades). Fail here with the fix instead of a confusing launcher crash.
+NODE_MAJOR="${NODE_VER%%.*}"
+NODE_MINOR="$(echo "$NODE_VER" | cut -d. -f2)"
+if [ "$NODE_MAJOR" -lt 24 ] || { [ "$NODE_MAJOR" -eq 24 ] && [ "$NODE_MINOR" -lt 9 ]; }; then
+    echo "  [ERROR] dsh 0.2.x needs Node >= 24.9.0, found v$NODE_VER"
+    echo "  [ERROR] Fix on Termux:  pkg update -y && pkg upgrade -y && pkg install -y nodejs"
+    echo "  [ERROR] If node still crashes with CANNOT LINK EXECUTABLE, the system is"
+    echo "  [ERROR] in a mixed state: run 'pkg upgrade -y' (or 'pm clear' the app for a"
+    echo "  [ERROR] fresh bootstrap) before re-running install.sh."
+    exit 1
+fi
+echo "  [OK] Node v$NODE_VER (>= 24.9.0 required by dsh 0.2.x)"
 NODE_GYP_CACHE="$HOME/.cache/node-gyp/$NODE_VER"
 # Note: we deliberately do NOT export npm_config_nodedir. The pre-seeded cache
 # below is found by node-gyp on its own, and exporting npm_config_nodedir makes
@@ -391,27 +415,27 @@ echo "==> [4/9] Applying Android platform patches..."
 apply_patch "$REPO_DIR/patches/01-terminal-bash-android-shell.patch"         "$DSH_PKGS/dsh-terminal-bash" || true
 apply_patch "$REPO_DIR/patches/02-session-persistence-link-rename.patch"      "$DSH_PKGS/dsh-session-persistence-jsonl" || true
 apply_patch "$REPO_DIR/patches/03-subprocess-local-android.patch"             "$DSH_PKGS/dsh-subprocess-local" || true
-apply_patch "$REPO_DIR/patches/04-host-apiproxy-termux-open-index.patch"      "$DSH_PKGS/dsh-host-apiproxy" || true
-apply_patch "$REPO_DIR/patches/04-host-apiproxy-termux-open-opener.patch"     "$DSH_PKGS/dsh-host-apiproxy" || true
 apply_patch "$REPO_DIR/patches/05-host-directory-picker-native-android.patch" "$DSH_PKGS/dsh-host-directory-picker-native" || true
 apply_patch "$REPO_DIR/patches/06-workspace-archive-skip-session-known-check.patch" "$DSH_PKGS/dsh-workspace" || true
 apply_patch "$REPO_DIR/patches/07-sandbox-local-proot-runner.patch"           "$DSH_PKGS/dsh-sandbox-local" || true
-apply_patch "$REPO_DIR/patches/08-dsh-tool-fs-search-android-rg.patch"         "$DSH_PKGS/dsh-tool-fs-search" || true
+apply_patch "$REPO_DIR/patches/08-dsh-util-ripgrep-android-rg.patch"          "$DSH_PKGS/dsh-util-ripgrep" || true
+apply_patch "$REPO_DIR/patches/09-node-addon-system-android-flock.patch"      "$DSH_PKGS/node-addon-system" || true
 
 # ripgrep platform-package shim: @vscode/ripgrep resolves
-# @vscode/ripgrep-${platform}-${arch}, which for Termux is
-# @vscode/ripgrep-android-arm64 — a package that does not exist. Without it,
-# the glob/grep tools fail with "ripgrep launch failed" in every fresh
-# process. Create the shim (bin/rg -> system rg) so require.resolve() (the
-# patched resolveRgPath in 08-*.patch) finds a binary. Idempotent.
-RG_SHIM="$DSH_PKGS/../@vscode/ripgrep-android-arm64"
+# @vscode/ripgrep-${platform}-${arch}, and no such package exists for android
+# (any device ABI). Create the shim (bin/rg -> system rg) so require.resolve()
+# (the patched resolveRgPath in 08-*.patch) finds a binary. Idempotent; the
+# package name follows the RUNNING Node's arch (android-arm64 / android-x64 /
+# ...) instead of hardcoding one device's ABI.
+NODE_ARCH="$(node -p process.arch 2>/dev/null || echo arm64)"
+RG_SHIM="$DSH_PKGS/../@vscode/ripgrep-android-$NODE_ARCH"
 RG_SYSTEM="${RG_SYSTEM:-/data/data/com.termux/files/usr/bin/rg}"
 if [ -x "$RG_SYSTEM" ]; then
     if [ ! -f "$RG_SHIM/package.json" ]; then
         mkdir -p "$RG_SHIM/bin"
         cat > "$RG_SHIM/package.json" <<EOF
 {
-  "name": "@vscode/ripgrep-android-arm64",
+  "name": "@vscode/ripgrep-android-$NODE_ARCH",
   "version": "1.18.0",
   "description": "Termux shim: resolves rgPath to the system ripgrep ($RG_SYSTEM); @vscode/ripgrep has no android platform package.",
   "license": "MIT",
@@ -419,16 +443,26 @@ if [ -x "$RG_SYSTEM" ]; then
 }
 EOF
         ln -sf "$RG_SYSTEM" "$RG_SHIM/bin/rg"
-        echo "  [OK] ripgrep android shim -> $RG_SYSTEM"
+        echo "  [OK] ripgrep android-$NODE_ARCH shim -> $RG_SYSTEM"
     else
-        echo "  [SKIP] ripgrep android shim already present"
+        echo "  [SKIP] ripgrep android-$NODE_ARCH shim already present"
     fi
 else
     echo "  [WARN] system rg not found at $RG_SYSTEM — glob/grep tools need it (pkg install ripgrep)"
 fi
 
-# ── Step 5: Build native addons (koffi first — its statx() patch must be     ─
-#            baked into the binary) ───────────────────────────────────────────
+# xdg-open shim for the rc5 web browser handoff: dsh-web-app spawns the npm
+# `open` package, which on android runs the system `xdg-open`. Termux has no
+# xdg-open but ships termux-open; a tiny shim lets `dsh web` actually open the
+# browser instead of only printing the manual URL. Idempotent; skipped when
+# termux-open is absent (dsh degrades gracefully to printing the URL).
+if [ "$(uname -o 2>/dev/null)" = "Android" ] && command -v termux-open >/dev/null 2>&1 && ! command -v xdg-open >/dev/null 2>&1; then
+    printf '#!/data/data/com.termux/files/usr/bin/sh\nexec termux-open "$@"\n' > "${PREFIX:-/data/data/com.termux/files/usr}/bin/xdg-open"
+    chmod +x "${PREFIX:-/data/data/com.termux/files/usr}/bin/xdg-open"
+    echo "  [OK] xdg-open shim -> termux-open"
+fi
+
+# ── Step 5: Build native addons (koffi first, then node-pty) ────────────────
 echo "==> [5/9] Building native addons..."
 
 # node-gyp wrapper shipped with npm, for manual rebuilds
@@ -437,9 +471,15 @@ if [ -d "$NODE_GYP_BIN" ]; then
     export PATH="$NODE_GYP_BIN:$PATH"
 fi
 
-# 5a. koffi — apply the statx() Android patch BEFORE compiling, then build.
+# 5a. koffi — apply the statx() Android patch BEFORE compiling (koffi 3.2.1
+#     still carries lib/native/base/base.cc with the glibc statx() path that
+#     does not exist in Termux's bionic at the default API level), then build.
+#     The output triplet follows the RUNNING Node ABI
+#     (${platform}_${process.arch} -> android_arm64 / android_x64 / ...) —
+#     never a hardcoded device ABI.
 KOFFI_DIR="$DSH_DIR/node_modules/koffi"
-KOFFI_OUT="$KOFFI_DIR/build/koffi/android_arm64/koffi.node"
+KOFFI_ABI="$(node -p process.arch 2>/dev/null || echo arm64)"
+KOFFI_OUT="$KOFFI_DIR/build/koffi/android_$KOFFI_ABI/koffi.node"
 KOFFI_BUILD=false
 if apply_patch "$REPO_DIR/patches/koffi-statx.patch" "$KOFFI_DIR"; then
     KOFFI_BUILD=true
@@ -451,9 +491,22 @@ if $KOFFI_BUILD; then
     # Scrub CFLAGS/CXXFLAGS/CPPFLAGS: a user-level -D__ANDROID_API__ or other
     # define would leak into cmake via the env and break the build (bionic
     # availability checks vs. the android24 target).
+    # NOTE: no cnoke `--prebuild` here — koffi >= 3 loads its native lazily,
+    # so cnoke's prebuild check (require the package) passes even without a
+    # binary and would silently skip the build.
     if (cd "$KOFFI_DIR" && env -u CFLAGS -u CXXFLAGS -u CPPFLAGS \
-            node ./cnoke.cjs -P . -D src/koffi --prebuild --release); then
+            node ./cnoke.cjs -P . -D src/koffi --release); then
         echo "  [OK] koffi native lib built."
+        # cnoke's output layout varies between koffi releases; make sure the
+        # binary sits where koffi's loader looks for it (build/koffi/<triplet>/).
+        if [ ! -f "$KOFFI_OUT" ]; then
+            _built="$(find "$KOFFI_DIR/build" -name koffi.node -type f 2>/dev/null | head -1)"
+            if [ -n "$_built" ]; then
+                mkdir -p "$(dirname "$KOFFI_OUT")"
+                cp "$_built" "$KOFFI_OUT"
+                echo "  [OK] koffi.node placed at build/koffi/android_$KOFFI_ABI/ (from $_built)"
+            fi
+        fi
     else
         echo "  [ERROR] koffi build failed!"
         echo "  Common causes: missing cmake (pkg install cmake), missing"
@@ -463,7 +516,7 @@ if $KOFFI_BUILD; then
         exit 1
     fi
 else
-    echo "  [SKIP] koffi already built with patched sources."
+    echo "  [SKIP] koffi already built (build/koffi/android_$KOFFI_ABI/koffi.node)."
 fi
 
 # 5b. node-pty — compile against the Termux bionic sysroot.
@@ -493,11 +546,95 @@ else
     fi
 fi
 
-# 5c. Restore the executable bit of node-pty's spawn helper (npm strips it).
+# 5c. node-addon-require-builtin — rc5's launcher requires this N-API binding
+#     at boot, but upstream publishes prebuilt binaries only for
+#     darwin/linux/win32 (no android optional package) and the npm package
+#     ships no native sources ("fails closed"). Build it from the upstream
+#     source repo (master @ a58d3599, release 0.1.9 — N-API 9, ABI-stable)
+#     for the RUNNING Node arch and place it where
+#     node-addon-native-custom-loader looks for a local build:
+#     build/napi/napi-v9-android-<arch>/require_builtin.node
+NARB_DIR="$DSH_DIR/node_modules/node-addon-require-builtin"
+if [ -d "$NARB_DIR" ]; then
+    NARB_ARCH="$(node -p process.arch 2>/dev/null || echo arm64)"
+    NARB_OUT="$NARB_DIR/build/napi/napi-v9-android-$NARB_ARCH/require_builtin.node"
+    if [ -f "$NARB_OUT" ]; then
+        echo "  [SKIP] node-addon-require-builtin binding already built (android-$NARB_ARCH)"
+    else
+        echo "  -> Building node-addon-require-builtin binding (android-$NARB_ARCH)..."
+        NARB_SRC_DIR="${NARB_SRC_DIR:-$HOME/.cache/dsh-narb-src}"
+        if [ ! -f "$NARB_SRC_DIR/packages/native/binding.gyp" ]; then
+            rm -rf "$NARB_SRC_DIR"
+            # timeout: github clones have been observed to hang indefinitely on
+            # some networks; a stalled clone must not stall the whole install.
+            timeout 180 git clone --depth 1 https://github.com/deepseek-ai/dsh-node-addon-require-builtin.git "$NARB_SRC_DIR" \
+                && (cd "$NARB_SRC_DIR" && timeout 120 git fetch --depth 1 origin a58d3599a2e551d7d706d1ff796c9fd4bbaff63c 2>/dev/null \
+                    && git checkout --detach FETCH_HEAD 2>/dev/null || true) \
+                || echo "  [WARN] could not clone dsh-node-addon-require-builtin — binding will not be built"
+        fi
+        if [ -f "$NARB_SRC_DIR/packages/native/binding.gyp" ]; then
+            # binding.gyp resolves node-addon-api (header wrappers) from cwd;
+            # it is not a published dependency, so install it into the source.
+            if (cd "$NARB_SRC_DIR/packages/native" \
+                    && npm install --no-save node-addon-api > /dev/null 2>&1 \
+                    && env -u CFLAGS -u CXXFLAGS -u CPPFLAGS \
+                        node-gyp rebuild --nodedir="$NODE_GYP_CACHE" -- -Dnarb_product=require-builtin); then
+                mkdir -p "$(dirname "$NARB_OUT")"
+                cp "$NARB_SRC_DIR/packages/native/build/Release/require_builtin.node" "$NARB_OUT"
+                echo "  [OK] node-addon-require-builtin built -> build/napi/napi-v9-android-$NARB_ARCH/"
+            else
+                echo "  [WARN] node-addon-require-builtin build failed — the launcher"
+                echo "         may fail with 'No usable native binding found' at boot."
+            fi
+        fi
+    fi
+fi
+
+# 5d. Restore the executable bit of node-pty's spawn helper (npm strips it).
 SUB_DIR="$DSH_PKGS/dsh-subprocess-local"
 if [ -f "$SUB_DIR/scripts/ensure-spawn-helper.mjs" ]; then
     (cd "$SUB_DIR" && node scripts/ensure-spawn-helper.mjs) && \
         echo "  [OK] subprocess spawn-helper restored (chmod 755)"
+fi
+
+# 5e. @deepseek-ai/node-addon-system flock binding — session persistence locks
+#     session files with POSIX flock(2) via this package; upstream ships
+#     darwin/linux(glibc|musl) prebuilts only, so on Android every session
+#     open (headless or web) failed with "dsh: flock is not supported on
+#     android-<arch>". bionic has flock(2): build the tiny N-API binding from
+#     the source this repo ships (native/node-addon-system-flock/) and place
+#     it at bin/android-<arch>/system.node, the location
+#     patches/09-node-addon-system-android-flock.patch teaches flock.js to
+#     load. Output follows the RUNNING Node arch — never a hardcoded ABI.
+NAS_DIR="$DSH_DIR/node_modules/@deepseek-ai/node-addon-system"
+if [ -d "$NAS_DIR" ]; then
+    NAS_ARCH="$(node -p process.arch 2>/dev/null || echo arm64)"
+    NAS_OUT="$NAS_DIR/bin/android-$NAS_ARCH/system.node"
+    if [ -f "$NAS_OUT" ]; then
+        echo "  [SKIP] node-addon-system flock binding already built (android-$NAS_ARCH)"
+    else
+        echo "  -> Building node-addon-system flock binding (android-$NAS_ARCH)..."
+        NAS_SRC_DIR="${NAS_SRC_DIR:-$HOME/.cache/dsh-nas-flock-src}"
+        rm -rf "$NAS_SRC_DIR"
+        mkdir -p "$NAS_SRC_DIR"
+        cp "$REPO_DIR/native/node-addon-system-flock/flock.c" "$NAS_SRC_DIR/"
+        cp "$REPO_DIR/native/node-addon-system-flock/binding.gyp" "$NAS_SRC_DIR/"
+        if (cd "$NAS_SRC_DIR" \
+                && env -u CFLAGS -u CXXFLAGS -u CPPFLAGS \
+                    node-gyp rebuild --nodedir="$NODE_GYP_CACHE" > "$NAS_SRC_DIR/build.log" 2>&1) \
+                && [ -f "$NAS_SRC_DIR/build/Release/system.node" ]; then
+            mkdir -p "$(dirname "$NAS_OUT")"
+            cp "$NAS_SRC_DIR/build/Release/system.node" "$NAS_OUT"
+            echo "  [OK] flock binding built -> bin/android-$NAS_ARCH/system.node"
+        else
+            echo "  [ERROR] node-addon-system flock binding build failed!"
+            tail -20 "$NAS_SRC_DIR/build.log" 2>/dev/null || true
+            echo "  Session opens will fail with 'flock is not supported'."
+            exit 1
+        fi
+    fi
+else
+    echo "  [WARN] @deepseek-ai/node-addon-system not found — flock binding skipped"
 fi
 
 # ── Step 6: Install sharp WebAssembly fallback ───────────────────────────────
@@ -534,10 +671,10 @@ fi
 
 if [ -f "$WEB_PROFILE_DIR/package.json" ] && grep -q "dsh-mobile-nav" "$WEB_PROFILE_DIR/package.json" 2>/dev/null; then
     echo "  [SKIP] dsh-web-mobile already installed"
-elif node --expose-internals "$DSH_DIR/lib/bin.js" plugin --profile web add github:mexiaosqwq/dsh-web-mobile 2>&1; then
+elif timeout 300 node --expose-internals "$DSH_DIR/lib/bin.js" plugin --profile web add github:mexiaosqwq/dsh-web-mobile 2>&1; then
     echo "  [OK] dsh-web-mobile installed"
 else
-    echo "  [WARN] dsh plugin add failed. Install it manually later with:"
+    echo "  [WARN] dsh plugin add failed (optional — github access can stall on some networks). Install it manually later with:"
     echo "    $PLUGIN_CMD"
 fi
 
@@ -556,9 +693,17 @@ else
     _NATIVE_MISSING=true
 fi
 if [ -f "$KOFFI_OUT" ]; then
-    echo "    [OK] koffi android_arm64 koffi.node"
+    echo "    [OK] koffi android_$KOFFI_ABI koffi.node"
 else
-    echo "    [MISS] koffi android_arm64 koffi.node"
+    echo "    [MISS] koffi android_$KOFFI_ABI koffi.node"
+    _NATIVE_MISSING=true
+fi
+if [ -d "$NARB_DIR" ] && [ ! -f "$NARB_DIR/build/napi/napi-v9-android-$(node -p process.arch)/require_builtin.node" ]; then
+    echo "    [MISS] node-addon-require-builtin binding (launcher needs it)"
+    _NATIVE_MISSING=true
+fi
+if [ -d "$NAS_DIR" ] && [ ! -f "$NAS_DIR/bin/android-$(node -p process.arch)/system.node" ]; then
+    echo "    [MISS] node-addon-system flock binding (session opens need it)"
     _NATIVE_MISSING=true
 fi
 if $_NATIVE_MISSING; then
@@ -578,13 +723,11 @@ for patch_file in "$REPO_DIR"/patches/*.patch; do
         terminal-bash-android-shell)                dir="$DSH_PKGS/dsh-terminal-bash" ;;
         session-persistence-link-rename)            dir="$DSH_PKGS/dsh-session-persistence-jsonl" ;;
         subprocess-local-android)                   dir="$DSH_PKGS/dsh-subprocess-local" ;;
-        host-apiproxy-termux-open-index)            dir="$DSH_PKGS/dsh-host-apiproxy" ;;
-        host-apiproxy-termux-open-opener)           dir="$DSH_PKGS/dsh-host-apiproxy" ;;
         host-directory-picker-native-android)       dir="$DSH_PKGS/dsh-host-directory-picker-native" ;;
         workspace-archive-skip-session-known-check) dir="$DSH_PKGS/dsh-workspace" ;;
         sandbox-local-proot-runner)                 dir="$DSH_PKGS/dsh-sandbox-local" ;;
-        dsh-tool-fs-search-android-rg)              dir="$DSH_PKGS/dsh-tool-fs-search" ;;
-        koffi-statx)                                dir="$DSH_DIR/node_modules/koffi" ;;
+        dsh-util-ripgrep-android-rg)                dir="$DSH_PKGS/dsh-util-ripgrep" ;;
+        node-addon-system-android-flock)            dir="$DSH_PKGS/node-addon-system" ;;
         *) dir="" ;;
     esac
     if [ -n "$dir" ] && [ -d "$dir" ]; then
