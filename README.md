@@ -96,6 +96,29 @@ prebuilt natives. Prefer it only when the ~57 MB download is a concern.
 Maintainers rebuild both with
 [`scripts/build-prebuilt.sh`](scripts/build-prebuilt.sh).
 
+### Plan C — the runtime this repo's author actually runs (`dsh-runtime/`)
+
+[`dsh-runtime/`](dsh-runtime/README.md) collects the **v1.3.0 runtime payload** that is
+live on the author's device (Android 16 / Termux arm64): the on-device installer, the
+updater, 10 npm patches, the `dsh` wrapper, and an Android control script. It is a
+**parallel** option — it does not touch Plan A/B above.
+
+It is text-only (~170 KB): no `node/`, no `node_modules`, no credentials, no sessions.
+Use it when you want the exact working set, or when you drive the backend from the
+companion Android app ([dsh-android-client](https://github.com/hawkqiang/dsh-android-client))
+through Termux `RUN_COMMAND`.
+
+```bash
+# Option 1: official tarball (bundles the glibc Node + patched dsh)
+curl -fsSL https://github.com/ErEbusE/dsh-termux/releases/latest/download/install.sh | bash -s -- -y
+
+# Option 2: install from this repo's payload plus your own node/ + work/
+bash dsh-runtime/install.sh -p dsh-termux-runtime.tar.gz -y
+```
+
+See [`dsh-runtime/docs/android-integration.md`](dsh-runtime/docs/android-integration.md)
+for the `RUN_COMMAND` contract, the launch-token/cookie flow, and troubleshooting.
+
 ## Usage
 
 ### Mobile UI Adaptation
@@ -206,6 +229,13 @@ deepseek-harness-termux/
 ├── README.zh-CN.md            # 简体中文 README
 ├── LICENSE                    # MIT License
 ├── install.sh                 # Automated installer (idempotent)
+├── dsh-runtime/               # Plan C: live v1.3.0 runtime payload (text-only, ~170 KB)
+│   ├── README.md              #   What it is, install/update, patch list
+│   ├── install.sh             #   On-device installer (from ErEbusE/dsh-termux, MIT)
+│   ├── scripts/               #   common.sh, patch-lib.sh, update-dsh.sh, dsh-termux-ctl.sh
+│   ├── patches/               #   10 npm patches (Android/Termux)
+│   ├── work/                  #   dsh wrapper + dsh-termux-open ($BROWSER handoff)
+│   └── docs/                  #   android-integration.md (RUN_COMMAND contract)
 ├── docs/
 │   └── termux-ripgrep-fix.md  # Ripgrep android-arm64 fix (root cause + recovery)
 ├── scripts/
@@ -227,6 +257,7 @@ deepseek-harness-termux/
 
 - **[DeepSeek AI](https://github.com/deepseek-ai)** for the excellent [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) agent framework.
 - **[@mexiaosqwq](https://github.com/mexiaosqwq)** for the [dsh-web-mobile](https://github.com/mexiaosqwq/dsh-web-mobile) mobile UI plugin.
+- **[@ErEbusE](https://github.com/ErEbusE)** for [dsh-termux](https://github.com/ErEbusE/dsh-termux) (MIT), whose v1.3.0 runtime payload is collected in [`dsh-runtime/`](dsh-runtime/README.md).
 - **Termux Community** for the Android terminal environment.
 - **koffi**, **node-pty**, and **sharp** maintainers.
 

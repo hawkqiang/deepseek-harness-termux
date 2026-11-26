@@ -90,6 +90,28 @@ dsh web
 自动回退)、应用补丁并放入预编译原生模块。仅当在意 ~57MB 下载体积时再选它。
 维护者用 [`scripts/build-prebuilt.sh`](scripts/build-prebuilt.sh) 重建两者。
 
+### 方案三 — 作者本机实际在跑的那套(`dsh-runtime/`)
+
+[`dsh-runtime/`](dsh-runtime/README.md) 收录了作者设备上(Android 16 / Termux arm64)
+**实际正在运行**的 v1.3.0 运行时载荷:设备端安装器、更新器、10 个 npm 补丁、`dsh`
+包装器,以及一个 Android 控制脚本。它与上面的方案一/方案二**并行存在**,互不影响。
+
+该目录是纯文本(约 170KB):不含 `node/`、不含 `node_modules`、不含任何凭据或会话。
+适合两种场景:想要与作者完全一致的可用组合;或用配套的 Android 应用
+([dsh-android-client](https://github.com/hawkqiang/dsh-android-client))
+通过 Termux `RUN_COMMAND` 来管理后端。
+
+```bash
+# 方式一:官方 tarball(自带 glibc Node 与打好补丁的 dsh)
+curl -fsSL https://github.com/ErEbusE/dsh-termux/releases/latest/download/install.sh | bash -s -- -y
+
+# 方式二:用本仓库载荷 + 自备的 node/ 与 work/ 安装
+bash dsh-runtime/install.sh -p dsh-termux-runtime.tar.gz -y
+```
+
+`RUN_COMMAND` 契约、启动令牌/Cookie 流程与排错见
+[`dsh-runtime/docs/android-integration.md`](dsh-runtime/docs/android-integration.md)。
+
 ## 使用方法
 
 ### 移动端 UI 适配
@@ -187,6 +209,13 @@ deepseek-harness-termux/
 ├── README.zh-CN.md            # 简体中文 README
 ├── LICENSE                    # MIT 许可证
 ├── install.sh                 # 自动化安装脚本(幂等)
+├── dsh-runtime/               # 方案三:实测可用的 v1.3.0 运行时载荷(纯文本,约 170KB)
+│   ├── README.md              #   说明、安装/升级、补丁清单
+│   ├── install.sh             #   设备端安装器(来自 ErEbusE/dsh-termux, MIT)
+│   ├── scripts/               #   common.sh、patch-lib.sh、update-dsh.sh、dsh-termux-ctl.sh
+│   ├── patches/               #   10 个 npm 补丁(Android/Termux 适配)
+│   ├── work/                  #   dsh 包装器 + dsh-termux-open($BROWSER 交接)
+│   └── docs/                  #   android-integration.md(RUN_COMMAND 契约)
 └── patches/                   # 源码补丁(在各包目录内 patch -p1 应用)
     ├── 01-terminal-bash-android-shell.patch
     ├── 02-session-persistence-link-rename.patch
@@ -201,6 +230,7 @@ deepseek-harness-termux/
 
 - **[DeepSeek AI](https://github.com/deepseek-ai)** — 优秀的 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 智能体框架。
 - **[@mexiaosqwq](https://github.com/mexiaosqwq)** — [dsh-web-mobile](https://github.com/mexiaosqwq/dsh-web-mobile) 移动端 UI 适配插件。
+- **[@ErEbusE](https://github.com/ErEbusE)** — [dsh-termux](https://github.com/ErEbusE/dsh-termux)(MIT),其 v1.3.0 运行时载荷收录于 [`dsh-runtime/`](dsh-runtime/README.md)。
 - **Termux 社区** — Android 终端环境。
 - **koffi**、**node-pty**、**sharp** 的维护者。
 

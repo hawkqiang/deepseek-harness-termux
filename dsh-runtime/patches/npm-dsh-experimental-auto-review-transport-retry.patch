@@ -1,0 +1,58 @@
+diff --git a/dsh-experimental-auto-review/lib/index.js b/dsh-experimental-auto-review/lib/index.js
+index 918eb44..fdfaca1 100644
+--- a/dsh-experimental-auto-review/lib/index.js
++++ b/dsh-experimental-auto-review/lib/index.js
+@@ -502,6 +502,44 @@ async function readDecision(stream) {
+ 	if (final?.type !== "text" || blocks.slice(0, -1).some((block) => block.type !== "reasoning")) throw new Error("auto-review: reviewer must emit zero or more reasoning blocks followed by exactly one text block");
+ 	return parseDecision(final.text);
+ }
++/** dsh-termux-auto-review-retry — transient reviewer transport failures worth re-issuing; a protocol mismatch is not one. */
++const REVIEW_RETRY_PATTERN = /TRANSPORT|ECONNRESET|EPIPE|ETIMEDOUT|UND_ERR_SOCKET|other side closed|socket hang up|fetch failed/i;
++/** Bounded backoff for a retried review: three attempts total, never an unbounded loop. */
++const REVIEW_RETRY_DELAYS_MS = [2e3, 5e3];
++/** Sleep one retry delay, abandoning it as soon as the reviewed call is aborted. */
++function delayUnlessAborted(ms, signal) {
++	if (signal === void 0) return new Promise((resolve) => setTimeout(resolve, ms));
++	if (signal.aborted) return Promise.reject(signal.reason);
++	return new Promise((resolve, reject) => {
++		const onAbort = () => {
++			clearTimeout(timer);
++			signal.removeEventListener("abort", onAbort);
++			reject(signal.reason);
++		};
++		const timer = setTimeout(() => {
++			signal.removeEventListener("abort", onAbort);
++			resolve();
++		}, ms);
++		signal.addEventListener("abort", onAbort, { once: true });
++	});
++}
++/**
++* Re-issue a review after a transient transport failure. The reviewer owns no
++* retry layer, so one dropped socket previously failed the pending tool call
++* outright; a transport blip now gets two more attempts, while protocol,
++* policy, and abort outcomes stay terminal.
++*/
++async function reviewWithRetry(ctx, options, signal) {
++	for (let attempt = 0; ; attempt += 1) {
++		try {
++			return await readDecision(ctx.llm.stream(options));
++		} catch (error) {
++			const message = error instanceof Error ? error.message : String(error);
++			if (attempt >= REVIEW_RETRY_DELAYS_MS.length || !REVIEW_RETRY_PATTERN.test(message) || signal !== void 0 && signal.aborted) throw error;
++			await delayUnlessAborted(REVIEW_RETRY_DELAYS_MS[attempt], signal);
++		}
++	}
++}
+ /** Review one frozen pending action with the fixed policy and current LLM route. */
+ async function classifyRisk(ctx, agent, exec, signal, shown) {
+ 	const snapshot = snapshotAutoReview(agent, exec, await ctx.workingDirectory.ensure(agent, signal), shown);
+@@ -516,7 +554,7 @@ async function classifyRisk(ctx, agent, exec, signal, shown) {
+ 		purpose: "auto-review",
+ 		signal
+ 	});
+-	return readDecision(ctx.llm.stream(options));
++	return reviewWithRetry(ctx, options, signal);
+ }
+ /** Materialize the fixed model-facing final Auto denial plus optional UI detail. */
+ function denied(exec, reason) {
